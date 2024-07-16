@@ -1,128 +1,96 @@
 # %%
 
-# Import necessary libraries
+# 필요한 라이브러리 임포트
 import numpy as np
 import os
-import string
 import mediapipe as mp
 import cv2
-from my_functions import *
+from my_functions import *  # 사용자 정의 함수 임포트
 import keyboard
 from tensorflow.keras.models import load_model
-import language_tool_python
 
-# Set the path to the data directory
+# 데이터 디렉터리 경로 설정
 PATH = os.path.join('data')
 
-# Create an array of action labels by listing the contents of the data directory
+# 데이터 디렉터리 내의 파일 목록을 통해 행동 레이블 배열 생성
 actions = np.array(os.listdir(PATH))
 
-# Load the trained model
-model = load_model('my_model')
+# 학습된 모델 로드
+model = load_model('my_model.keras')
 
-# Create an instance of the grammar correction tool
-tool = language_tool_python.LanguageToolPublicAPI('en-UK')
+# 리스트 초기화
+keypoints = []
+predictions = []
+last_prediction = ""
 
-# Initialize the lists
-sentence, keypoints, last_prediction, grammar, grammar_result = [], [], [], [], []
-
-# Access the camera and check if the camera is opened successfully
+# 카메라 접근 및 성공적으로 열렸는지 확인
 cap = cv2.VideoCapture(0)
 if not cap.isOpened():
     print("Cannot access camera.")
     exit()
 
-# Create a holistic object for sign prediction
+# 전체적인 객체를 생성하여 사인 예측을 수행
 with mp.solutions.holistic.Holistic(min_detection_confidence=0.75, min_tracking_confidence=0.75) as holistic:
-    # Run the loop while the camera is open
     while cap.isOpened():
-        # Read a frame from the camera
+        # 카메라에서 프레임 읽기
         _, image = cap.read()
-        # Process the image and obtain sign landmarks using image_process function from my_functions.py
+        
+        # 이미지 처리 및 my_functions.py의 image_process 함수를 사용하여 사인 랜드마크 획득
         results = image_process(image, holistic)
-        # Draw the sign landmarks on the image using draw_landmarks function from my_functions.py
+        
+        # my_functions.py의 draw_landmarks 함수를 사용하여 이미지에 사인 랜드마크 그리기
         draw_landmarks(image, results)
-        # Extract keypoints from the pose landmarks using keypoint_extraction function from my_functions.py
+        
+        # my_functions.py의 keypoint_extraction 함수를 사용하여 포즈 랜드마크에서 키포인트 추출
         keypoints.append(keypoint_extraction(results))
 
-        # Check if 10 frames have been accumulated
-        if len(keypoints) == 10:
-            # Convert keypoints list to a numpy array
+        # 30 프레임이 누적되었는지 확인
+        if len(keypoints) == 30:
+            # 키포인트 리스트를 넘파이 배열로 변환
             keypoints = np.array(keypoints)
-            # Make a prediction on the keypoints using the loaded model
+            
+            # 로드된 모델을 사용하여 키포인트에 대한 예측 수행
             prediction = model.predict(keypoints[np.newaxis, :, :])
-            # Clear the keypoints list for the next set of frames
+            
+            # 예측 결과를 predictions 리스트에 추가
+            predictions.append(prediction[0])  # Ensure the prediction is added as a 1D array
+            
+            # 다음 프레임 세트를 위해 키포인트 리스트 초기화
             keypoints = []
 
-            # Check if the maximum prediction value is above 0.9
-            if np.amax(prediction) > 0.9:
-                # Check if the predicted sign is different from the previously predicted sign
-                if last_prediction != actions[np.argmax(prediction)]:
-                    # Append the predicted sign to the sentence list
-                    sentence.append(actions[np.argmax(prediction)])
-                    # Record a new prediction to use it on the next cycle
-                    last_prediction = actions[np.argmax(prediction)]
+            # 누적된 예측 결과의 평균 계산
+            avg_prediction = np.mean(predictions, axis=0)
+            predicted_action_index = np.argmax(avg_prediction)
+            predicted_action = actions[predicted_action_index]
+            avg_confidence = avg_prediction[predicted_action_index]
 
-        # Limit the sentence length to 7 elements to make sure it fits on the screen
-        if len(sentence) > 7:
-            sentence = sentence[-7:]
+            # 다음 프레임 세트를 위해 predictions 리스트 초기화
+            predictions = []
 
-        # Reset if the "Spacebar" is pressed
-        if keyboard.is_pressed(' '):
-            sentence, keypoints, last_prediction, grammar, grammar_result = [], [], [], [], []
+            # 평균 신뢰도가 임계값을 초과하는지 확인
+            if avg_confidence > 0.9:
+                last_prediction = predicted_action
+            else:
+                last_prediction = "Fail"
 
-        # Check if the list is not empty
-        if sentence:
-            # Capitalize the first word of the sentence
-            sentence[0] = sentence[0].capitalize()
+        # 이미지에 예측 결과 표시
+        cv2.putText(image, f'Prediction: {last_prediction}', 
+                    (20, 400), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0) if last_prediction != "Fail" else (0, 0, 255), 2, cv2.LINE_AA)
 
-        # Check if the sentence has at least two elements
-        if len(sentence) >= 2:
-            # Check if the last element of the sentence belongs to the alphabet (lower or upper cases)
-            if sentence[-1] in string.ascii_lowercase or sentence[-1] in string.ascii_uppercase:
-                # Check if the second last element of sentence belongs to the alphabet or is a new word
-                if sentence[-2] in string.ascii_lowercase or sentence[-2] in string.ascii_uppercase or (sentence[-2] not in actions and sentence[-2] not in list(x.capitalize() for x in actions)):
-                    # Combine last two elements
-                    sentence[-1] = sentence[-2] + sentence[-1]
-                    sentence.pop(len(sentence) - 2)
-                    sentence[-1] = sentence[-1].capitalize()
-
-        # Perform grammar check if "Enter" is pressed
-        if keyboard.is_pressed('enter'):
-            # Record the words in the sentence list into a single string
-            text = ' '.join(sentence)
-            # Apply grammar correction tool and extract the corrected result
-            grammar_result = tool.correct(text)
-
-        if grammar_result:
-            # Calculate the size of the text to be displayed and the X coordinate for centering the text on the image
-            textsize = cv2.getTextSize(grammar_result, cv2.FONT_HERSHEY_SIMPLEX, 1, 2)[0]
-            text_X_coord = (image.shape[1] - textsize[0]) // 2
-
-            # Draw the sentence on the image
-            cv2.putText(image, grammar_result, (text_X_coord, 470),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
-        else:
-            # Calculate the size of the text to be displayed and the X coordinate for centering the text on the image
-            textsize = cv2.getTextSize(' '.join(sentence), cv2.FONT_HERSHEY_SIMPLEX, 1, 2)[0]
-            text_X_coord = (image.shape[1] - textsize[0]) // 2
-
-            # Draw the sentence on the image
-            cv2.putText(image, ' '.join(sentence), (text_X_coord, 470),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
-
-        # Show the image on the display
+        # 디스플레이에 이미지 표시
         cv2.imshow('Camera', image)
-
+        
         cv2.waitKey(1)
 
-        # Check if the 'Camera' window was closed and break the loop
-        if cv2.getWindowProperty('Camera',cv2.WND_PROP_VISIBLE) < 1:
+        # 'q' 키가 눌렸는지 확인하여 루프 종료
+        if keyboard.is_pressed('q'):
             break
 
-    # Release the camera and close all windows
+        # 'Camera' 창이 닫혔는지 확인하여 루프 종료
+        if cv2.getWindowProperty('Camera', cv2.WND_PROP_VISIBLE) < 1:
+            break
+
+    # 카메라 해제 및 모든 창 닫기
     cap.release()
     cv2.destroyAllWindows()
 
-    # Shut off the server
-    tool.close()
